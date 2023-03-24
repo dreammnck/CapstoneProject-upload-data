@@ -103,7 +103,7 @@ func KeepProcessAlive() {
 func main() {
 	InitViper()
 	s := gocron.NewScheduler(time.UTC)
-	// fetchEvery := viper.GetInt64("app.fetchTime")
+	fetchEvery := viper.GetInt64("app.fetchTime")
 	googleStorageClient := InitGoogleStorageClient()
 	elasticsearchClient := InitElasticsearch()
 	mongoClient := InitMongoClient()
@@ -112,7 +112,7 @@ func main() {
 	elasticsearchService := services.NewElasticsearchService(elasticsearchClient)
 
 	uploadedDataTask := tasks.NewUploadDataTask(mongoClient, googleService, elasticsearchService)
-	s.Every(30 * time.Second).Do(uploadedDataTask.Upload)
+	s.Every(fetchEvery).Do(uploadedDataTask.Upload)
 	s.StartAsync()
 	KeepProcessAlive()
 }
