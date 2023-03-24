@@ -16,6 +16,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+const MAX_CONCURRENT_JOBS = 2
+
 type UploadDataTask interface {
 	Upload()
 }
@@ -72,7 +74,8 @@ func (u uploadDataTask) fetchAndWriteData(filterDataParam types.FilterDataParam,
 		return
 	}
 
-	filename := time.Unix(filterDataParam.StartTime, 0).Format("2006_01_02_15_04_05") + filterDataParam.DeviceId + ".csv"
+	filename := time.Unix(filterDataParam.EndTime, 0).Format("2006_01_02_15_04_05") + ".csv"
+	fmt.Println(filterDataParam.EndTime)
 	file, err := os.Create(filename)
 	csvWriter := csv.NewWriter(file)
 
@@ -121,13 +124,12 @@ func (u uploadDataTask) fetchAndWriteData(filterDataParam types.FilterDataParam,
 			IsCompleted: true,
 		}
 		u.elasticsearchService.UploadLog("test-upload", uploadMedicalDataLog)
-		fmt.Println("done")
 	}
 
 }
 
 func (u uploadDataTask) Upload() {
-	fmt.Println("called")
+	waitChan := make(chan struct{}, MAX_CONCURRENT_JOBS)
 	medicalModels, err := u.medicalModelCollection.Distinct(context.TODO(), "modelName", bson.M{}, nil)
 
 	if err != nil {
@@ -135,24 +137,34 @@ func (u uploadDataTask) Upload() {
 	}
 
 	for _, medicalModel := range medicalModels {
+		waitChan <- struct{}{}
 		ids, err := u.medicalDataCollection.Distinct(context.TODO(), "deviceId", bson.M{"modelName": medicalModel}, nil)
 		modelStructure, err := u.fetchModelStructure(medicalModel.(string))
 		if err != nil {
 			fmt.Println(err.Error())
 		}
+
 		uploadDataSubTaskParam := types.UploadDataSubTask{
 			MedicalModelName: medicalModel.(string),
 			Ids:              ids,
 			ModelStructure:   *modelStructure,
 		}
 
-		go u.uploadDataSubTask(uploadDataSubTaskParam)
+		go func() {
+			u.uploadDataSubTask(uploadDataSubTaskParam)
+			<-waitChan
+		}()
 	}
 
 }
 
 func (u uploadDataTask) uploadDataSubTask(uploadDataSubTask types.UploadDataSubTask) {
+	fetchEvery := viper.GetInt64("app.fetchTime")
 	for _, id := range uploadDataSubTask.Ids {
+
+		if id == nil {
+			continue
+		}
 		// filter data from elasticsearch
 		query := fmt.Sprintf(`{
   		"query": {
@@ -182,7 +194,7 @@ func (u uploadDataTask) uploadDataSubTask(uploadDataSubTask types.UploadDataSubT
 			filterParam.EndTime = time.Now().UTC().Unix()
 		} else {
 			filterParam.StartTime = int64(searchResult["endTime"].(float64))
-			filterParam.EndTime = int64(searchResult["endTime"].(float64)) + int64(15*(time.Minute))
+			filterParam.EndTime = int64(searchResult["endTime"].(float64)) + int64(fetchEvery/int64(time.Minute)*60*60)
 		}
 
 		u.fetchAndWriteData(filterParam, &uploadDataSubTask.ModelStructure)
